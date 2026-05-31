@@ -1,9 +1,8 @@
-"""Assembles the backend registry for real runs.
+"""Assembles the backend registry for real runs (CLI + tests, no bpy).
 
-Phase 1: generation has TWO real backends (Copilot 3D automation + Tripo API); every
-downstream stage uses the algorithmic placeholder from ``stubs`` until its real algo lands
-in Phase 2+. This is the single swap point as backends mature (also referenced by the
-Blender operators).
+Phase 3: generation now has FOUR backends — Copilot 3D (free automation), Tripo, Meshy,
+and Hunyuan3D (via fal.ai). Downstream stages remain algorithmic stubs until Phase 2+
+bpy backends are wired in the Blender-specific registry (blender_addon/backends/registry).
 """
 from __future__ import annotations
 
@@ -12,10 +11,12 @@ from typing import Optional
 from ..adapter import BackendRegistry
 from .generation.copilot3d import Copilot3DBackend
 from .generation.drivers import BrowserDriver
+from .generation.hunyuan import FalHttpClient, HunyuanBackend
+from .generation.meshy import MeshyBackend, MeshyHttpClient
 from .generation.tripo import HttpClient, TripoBackend
 from .stubs import (
-    RetopoStub, UVStub, BakeStub, TextureStub, RigStub, AnimateStub,
-    LodStub, CollisionStub, ExportStub, ValidateStub,
+    AnimateStub, BakeStub, CollisionStub, ExportStub, LodStub,
+    RetopoStub, RigStub, TextureStub, UVStub, ValidateStub,
 )
 
 _DOWNSTREAM = (RetopoStub, UVStub, BakeStub, TextureStub, RigStub,
@@ -26,12 +27,16 @@ def build_default_registry(
     *,
     copilot_driver: Optional[BrowserDriver] = None,
     tripo_http: Optional[HttpClient] = None,
+    meshy_http: Optional[MeshyHttpClient] = None,
+    fal_http: Optional[FalHttpClient] = None,
 ) -> BackendRegistry:
     reg = BackendRegistry()
-    # Stage 3 — two real generation backends in parallel (DEVELOPMENT_PLAN.md §2.5).
-    reg.register(Copilot3DBackend(driver=copilot_driver))
-    reg.register(TripoBackend(http_client=tripo_http))
-    # Stages 4-13 — algorithmic placeholders for the vertical slice.
+    # Stage 3 — four generation backends; resolver picks by key availability + cost.
+    reg.register(Copilot3DBackend(driver=copilot_driver))   # free automation
+    reg.register(TripoBackend(http_client=tripo_http))       # paid, emits quads
+    reg.register(MeshyBackend(http_client=meshy_http))       # paid, PBR textures
+    reg.register(HunyuanBackend(http_client=fal_http))       # paid, high quality
+    # Stages 4-13 — stubs; bpy geometry backends in blender_addon/backends/registry.
     for cls in _DOWNSTREAM:
         reg.register(cls())
     return reg
