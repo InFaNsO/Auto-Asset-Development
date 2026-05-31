@@ -10,7 +10,7 @@ import bpy
 
 from assetforge.core.adapter import RunContext
 from assetforge.core.asset_state import AssetState, SourceKind
-from assetforge.core.backends.stubs import build_stub_registry
+from assetforge.core.backends.registry import build_default_registry
 from assetforge.core.pipeline import Mode, Pipeline
 from assetforge.core.stages import AssetType
 
@@ -22,8 +22,9 @@ _STATE_PROP = "assetforge_state_json"
 
 
 def _registry():
-    # Single place to assemble the backend registry; swap stubs for real backends here.
-    return build_stub_registry()
+    # Single place to assemble the backend registry. Real generation backends (Copilot 3D
+    # + Tripo) with algorithmic placeholders downstream until Phase 2 (registry.py).
+    return build_default_registry()
 
 
 def _load_or_init_state(context) -> AssetState:
