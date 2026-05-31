@@ -1,21 +1,24 @@
 """Stage 4 — Retopology.
 
 Strategy (in order of preference):
-  1. QuadriFlow — best quad topology. Needs a VIEW_3D area for context; we find
-     one via ``bpy.context.screen.areas`` and use ``temp_override``. Falls back if
-     no viewport is open or the operator errors.
-  2. Voxel Remesh — always available, applied via the depsgraph method so no
-     operator context is needed. Less topology-aware but reliable.
+  1. QuadriFlow  — best quality: re-meshes to clean quads while following the
+                   surface. Needs a VIEW_3D area for context (temp_override).
+  2. Decimate COLLAPSE — shape-preserving fallback: collapses the least important
+                   edges while following the original surface. The model keeps its
+                   silhouette and proportions, just at a lower poly count.
+                   Applied via the depsgraph method — no viewport context needed.
 
-Why not bpy.ops for modifier apply?
-  ``bpy.ops.object.modifier_apply()`` requires a 3D-viewport operator context that
-  is not available when called from within another operator (like our run_to_end).
-  The depsgraph method (``obj.evaluated_get(depsgraph)`` → ``new_from_object``) works
-  from any context and is the recommended approach in Blender 3.2+.
+⚠ Voxel Remesh is intentionally NOT used as a fallback. It voxelises the volume
+  and reconstructs the surface, which merges thin parts (fingers, clothing,
+  accessories) and destroys proportions on character meshes.
+
+Why depsgraph for modifier apply?
+  ``bpy.ops.object.modifier_apply()`` needs a 3D-viewport operator context that
+  is unavailable inside another operator. The depsgraph method
+  (``obj.evaluated_get(depsgraph)`` → ``new_from_object``) works from any context
+  and is the recommended approach in Blender 3.2+.
 """
 from __future__ import annotations
-
-import math
 
 import bpy
 
@@ -50,23 +53,24 @@ class RetopoBackend(Backend):
         used = _try_quadriflow(obj, target_faces)
         faces_after = len(obj.data.polygons)
 
-        # If QuadriFlow didn't run or barely changed the mesh, use Voxel Remesh.
+        # If QuadriFlow didn't fire or left the mesh unchanged, fall back to
+        # Decimate COLLAPSE — shape-preserving, works from any context.
         if used is None or faces_after == faces_before:
-            print(f"[AssetForge] retopo: QuadriFlow unavailable — using Voxel Remesh")
-            _apply_voxel_remesh(obj, target_faces)
-            used = "voxel_remesh"
+            print("[AssetForge] retopo: QuadriFlow unavailable — using Decimate (shape-preserving)")
+            _apply_decimate(obj, faces_before, target_faces)
+            used = "decimate_collapse"
 
         faces_final = len(obj.data.polygons)
         print(f"[AssetForge] retopo via {used}: {faces_before} → {faces_final} polys")
 
-        state.artifacts["topology"] = "quad"
+        state.artifacts["topology"] = "quad" if used == "quadriflow" else "tri"
         state.artifacts["blender_object"] = obj.name
         state.metadata.setdefault("retopo", {}).update(
             {"method": used, "faces_before": faces_before, "faces_after": faces_final})
         return state
 
 
-def _try_quadriflow(obj, target_faces: int) -> str | None:
+def _try_quadriflow(obj, target_faces: int):
     """Try QuadriFlow with a VIEW_3D temp_override. Returns 'quadriflow' or None."""
     areas = [a for a in bpy.context.screen.areas if a.type == "VIEW_3D"]
     if not areas:
@@ -82,20 +86,22 @@ def _try_quadriflow(obj, target_faces: int) -> str | None:
             )
         return "quadriflow" if "FINISHED" in result else None
     except Exception as exc:
-        print(f"[AssetForge] QuadriFlow failed ({exc}) — will use Voxel Remesh")
+        print(f"[AssetForge] QuadriFlow failed ({exc})")
         return None
 
 
-def _apply_voxel_remesh(obj, target_faces: int) -> None:
-    """Apply Voxel Remesh using the depsgraph method (no viewport context needed)."""
-    dims = obj.dimensions
-    obj_size = max(dims.x, dims.y, dims.z, 0.01)
-    voxel_size = max(0.002, obj_size / math.sqrt(max(target_faces, 100) / 6))
+def _apply_decimate(obj, faces_before: int, target_faces: int) -> None:
+    """Reduce poly count via Decimate COLLAPSE — shape-preserving, no context needed.
 
-    mod = obj.modifiers.new("AF_VoxelRemesh", "REMESH")
-    mod.mode = "VOXEL"
-    mod.voxel_size = voxel_size
-    mod.use_smooth_shade = True
-    mod.adaptivity = 0.0
+    Unlike Voxel Remesh this follows the original surface, so the model silhouette
+    and proportions are maintained. The ratio is clamped so we never try to increase
+    the poly count or decimate to essentially nothing.
+    """
+    ratio = max(0.01, min(0.99, target_faces / max(faces_before, 1)))
+
+    mod = obj.modifiers.new("AF_Decimate", "DECIMATE")
+    mod.decimate_type = "COLLAPSE"
+    mod.ratio = ratio
+    mod.use_collapse_triangulate = False  # keep n-gons / quads where possible
 
     apply_single_modifier(obj, mod)
